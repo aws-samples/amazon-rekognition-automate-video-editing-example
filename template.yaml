@@ -1,0 +1,229 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Sample template to do automatic video editing using Amazon Rekognition
+
+Parameters:
+  pSnsTopicName:
+    Type: String
+    Description: SNS Topic Name where Amazon Rekognition will post completion status
+    Default: rekognition-sns-topic
+
+  pElasticTranscoderPipelineId:
+    Type: String
+    Description: The elastic transcoder pipeline id to be used to combine the video scenes
+
+Resources:
+  RekognitionSNSPublishRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: rekognition-sns-publish-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: rekognition.amazonaws.com
+          Action: sts:AssumeRole
+      Policies:
+      - PolicyName: rekognition-sns-publish-policy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Sid: VisualEditor0
+            Effect: Allow
+            Action: sns:Publish
+            Resource: !Ref SNSTopic
+  
+  SNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: !Ref pSnsTopicName
+      Subscription:
+        - Endpoint: !GetAtt LambdaFunction.Arn
+          Protocol: "lambda"
+      TopicName: !Ref pSnsTopicName
+
+  SNSPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref SNSTopic
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action:
+              - 'SNS:GetTopicAttributes'
+              - 'SNS:SetTopicAttributes'
+              - 'SNS:AddPermission'
+              - 'SNS:RemovePermission'
+              - 'SNS:DeleteTopic'
+              - 'SNS:Subscribe'
+              - 'SNS:ListSubscriptionsByTopic'
+              - 'SNS:Publish'
+              - 'SNS:Receive'
+            Resource: !Ref SNSTopic
+            Condition:
+              StringEquals:
+                AWS:SourceOwner: !Sub ${AWS::AccountId}
+  
+  LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref LambdaFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref SNSTopic
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: face-search-role
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+      - PolicyName: face-search-lambda-policy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+              - rekognition:GetFaceSearch
+            Resource: "*"
+          - Effect: Allow
+            Action:
+            - elastictranscoder:Read*
+            - elastictranscoder:List*
+            - elastictranscoder:*Job
+            - elastictranscoder:*Preset
+            - s3:List*
+            - sns:List*
+            Resource: "*"
+
+  
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: face-search
+      Runtime: python3.9
+      Handler: index.lambda_handler
+      MemorySize: 128
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 30
+      Code:
+        ZipFile: !Sub |
+          '''
+          Extract timestamps from Amazon Rekognition Video Face Search
+          Then use Amazon Elastic Transcoder to stitch the clips together
+          '''
+
+          import boto3
+          import json
+
+          # Connect to Amazon Rekognition
+          def lambda_handler(event, context):
+              client = boto3.client('rekognition', region_name = 'ap-southeast-2')
+              ELASTIC_TRANSCODER_PIPELINE_ID = "${pElasticTranscoderPipelineId}"
+              
+              jobId = json.loads(event["Records"][0]["Sns"]["Message"])["JobId"]
+              # Retrieve the face search results
+              person_to_find = 'Lia'
+              timestamps=[]
+
+              search = client.get_face_search(JobId=jobId, SortBy='INDEX')
+
+              while (True):
+                  for person in search['Persons']:
+                      try:
+                          for face_matches in person['FaceMatches']:
+                              if face_matches['Face']['ExternalImageId'] == person_to_find:
+                                  timestamps.append(person['Timestamp'])
+                      except KeyError:
+                          pass
+
+                  # Retrieve the next set of results
+                  try:
+                      next_token = search['NextToken']
+                      search = client.get_face_search(JobId=jobId, SortBy='INDEX', NextToken = search['NextToken'])
+                  except KeyError:
+                      break
+
+              '''
+              The timestamps array now looks like:
+              [99800, 99840, 100000, 100040, ...]
+              '''
+
+              # Break into scenes with start & end times
+              scenes=[]
+              start = 0
+
+              for timestamp in timestamps:
+                  if start == 0:
+                      # First timestamp
+                      start = end = timestamp
+                  else:
+                      # More than 1 second between timestamps? Then scene has ended
+                      if timestamp - end > 1000:
+                          # If the scene is at least 1 second long, record it
+                          if end - start >= 1000:
+                              scenes.append((start, end))
+                          # Start a new scene
+                          start = 0
+                      else:
+                          # Extend scene to current timestamp
+                          end = timestamp
+
+              # Append final scene if it is at least 1 second long
+              if (start != 0) and (end - start >= 1000):
+                  scenes.append((start, end))
+
+              '''
+              The scenes array now looks like:
+              [(99800, 101480), (127520, 131760), ...]
+              '''
+              # Convert into format required by Amazon Elastic Transcoder
+              inputs=[]
+              for scene in scenes:
+                  start, end = scene
+                  inputs.append({
+                      'Key': 'SAs.mp4',
+                      'TimeSpan': {
+                          'StartTime': str(start/1000.),
+                          'Duration': str((end-start)/1000.)
+                      }
+                  })
+
+              '''
+              The inputs array now looks like:
+              [
+              {'Key': 'trainers.mp4', 'TimeSpan': {'StartTime': '99.8', 'Duration': '1.68'}},
+              {'Key': 'trainers.mp4', 'TimeSpan': {'StartTime': '127.52', 'Duration': '4.24'}},
+              ...
+              ]
+              '''
+
+              # Call Amazon Elastic Transcoder to stitch together a new video
+              client = boto3.client('elastictranscoder', region_name = 'ap-southeast-2')
+              
+              job = client.create_job(
+                  PipelineId = ELASTIC_TRANSCODER_PIPELINE_ID,
+                  Inputs=inputs,
+                  Output={'Key': 'output' + '.mp4', 'PresetId': "1351620000001-000001"}
+              )
+
+Outputs:
+  SNSArn:
+    Value: !Ref SNSTopic
+
+  RekognitionSNSPublishRoleArn:
+    Value: !GetAtt RekognitionSNSPublishRole.Arn
