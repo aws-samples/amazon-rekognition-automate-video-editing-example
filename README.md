@@ -9,6 +9,7 @@ For a whole video contaning many actors/speakers, we can just pull out snippets 
 
 1. Have aws-cli installed
 
+## Setup and Deployment:
 This is done in below Steps:
 
 1. Create an s3 bucket manually and give a name. eg we are naming it : `my-rekognition-images`
@@ -19,24 +20,26 @@ This is done in below Steps:
     ![Pipeline-id](images/elastic-transcoder-get-pipeline-id.JPG)
 
 1. Set up the infrastructure by launching the template in CloudFormation in your aws account and specify the `pieline-id` you got from step 3.
-    1. Note the `SNSArn` and `RekognitionSNSPublishRoleArn` from the `Output` section in the CloudFormation stack
+
+    * Note the `SNSArn` and `RekognitionSNSPublishRoleArn` from the `Output` section in the CloudFormation stack
 
 1. Run the below commands in aws-cli
-    1. **Create a collection**
+   
+   a. **Create a collection**
     ```hcl
     aws rekognition create-collection --collection-id my-collection --region ap-southeast-2
     ```
 
-    1. **Add image/face to be indexed**
+    b. **Add image/face to be indexed**
     ```hcl
     aws rekognition index-faces --collection-id my-collection --image "S3Object={Bucket=my-rekognition-images,Name=Lia.JPG}" --external-image -id Lia --region ap-southeast-2
     ```
 
-    1. **Start the face search in the video**
+    c. **Start the face search in the video**
     ```hcl
-    aws rekognition start-face-search --video "S3Object={Bucket=my-rekognition-images,Name=SAs.mp4}" --collection-id my-collection --notification-channel '{\"SNSTopicArn\":\"<sns-topic-arn-at-5th-step>\", \"RoleArn\":\"<role-arn-at-5th-step>\"}' --region ap-southeast-2
+    aws rekognition start-face-search --video "S3Object={Bucket=my-rekognition-images,Name=SAs.mp4}" --collection-id my-collection --notification-channel '{\"SNSTopicArn\":\"<sns-topic-arn-found-at-step-5>\", \"RoleArn\":\"<role-arn-found-at-step-5>\"}' --region ap-southeast-2
     ```
-    This is an asyncronous process and once the job is done, it will trigger the SNS topic which in turn triggers the lambda function which will do the job for us and the output video `output.mp4` will be uploaded in the `my-rekognition-images` s3 bucket
+    This is an asyncronous process and once the job is done, Amazon Rekognition will trigger the SNS topic which in turn triggers the lambda function which will do the job for us and the output video `output.mp4` will be uploaded in the `my-rekognition-images` s3 bucket
 
 ## Security
 
