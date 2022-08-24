@@ -1,6 +1,8 @@
 ## Automate Video Editing by just taking in the snippets for a particular actor/speaker
 
-For a whole video contaning many actors/speakers, we can just pull out snippets and create a video with those snippets so that it contains content from a single speaker/actor
+For a whole video contaning many actors/speakers, we can just pull out snippets and create a video with those snippets so that it contains content from a single speaker/actor.
+
+In this example, we are using this video: [What is it like to be a Solution Architect](https://www.youtube.com/watch?v=IBqqYWr4t94) and then we are extracting Lia's bit(snippets where she is present) by using her image. We have uploaded both(the video and Lia's image) in an s3 bucket and then use Amazon Rekognition to perform video editing.
 
 ## Reference Architecture
 ![Refernce Architecture](images/architecture.jpg)
