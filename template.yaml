@@ -37,6 +37,7 @@ Resources:
     Type: AWS::SNS::Topic
     Properties:
       DisplayName: !Ref pSnsTopicName
+      KmsMasterKeyId: alias/aws/sns
       Subscription:
         - Endpoint: !GetAtt LambdaFunction.Arn
           Protocol: "lambda"
